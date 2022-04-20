@@ -5,7 +5,7 @@ using LinearAlgebra
 using Statistics
 using Noise
 
-export make_prob, TSP, plot_sol, get_tour, plot_tour, tour_length, is_tour
+export make_prob, enet_TSP, enet_TSP_losses, plot_sol, get_tour, plot_tour, tour_length, is_tour, post_process!, make_circle
 
 const N = 100
 const M = 3*N
@@ -46,7 +46,7 @@ function make_prob(N,M; init=:circle)
     return X, Y
 end
 
-function softmax(X, Y, β)
+function softmax(X, Y, β, N)
     function p_i(i)
         diff = map(y -> X[i,:] - y, collect(eachrow(Y)))
         num = exp.(-β*norm.(diff).^2)
@@ -55,7 +55,7 @@ function softmax(X, Y, β)
     return hcat([p_i(i) for i in 1:N]...)'
 end
 
-function softmax(P_old, X, Y, β)
+function softmax(P_old, X, Y, β, N)
     function p_i(i)
         diff = map(y -> X[i,:] - y, collect(eachrow(Y)))
         num = P_old[i,:] .* exp.(-β*norm.(diff).^2)
@@ -79,15 +79,16 @@ function make_D(P, M)
     return Diagonal(D_dv)
 end
 
-function TSP(cities, hidden_cities, iters, β, κ, γ; visualize=false, anim=nothing)
+function enet_TSP(cities, hidden_cities, iters, β, κ, γ; visualize=false, anim=nothing)
     X = cities
     Y = hidden_cities
-    P = softmax(X, Y, β)
+    N = size(X)[1]
     M = size(Y)[1]
+    P = softmax(X, Y, β, N)
     L = make_L(M)
     for _ in 1:iters
         Y = (κ*L + make_D(P,M)) \ (P' * X)
-        P = softmax(P, X, Y, β)
+        P = softmax(P, X, Y, β, N)
         κ = κ / γ
         if visualize
             Y_plt = vcat(Y, Y[1,:]')
@@ -102,6 +103,29 @@ function TSP(cities, hidden_cities, iters, β, κ, γ; visualize=false, anim=not
         end
     end
     return Y, P
+end
+
+function enet_TSP_losses(lossfn, cities, hidden_cities, iters, β, κ; P_o=nothing)
+    X = cities
+    Y = hidden_cities
+    N = size(X)[1]
+    M = size(Y)[1]
+    if P_o == nothing
+        P = softmax(X, Y, β, N)
+        P_old = P
+    else
+        P = P_o
+        P_old = P
+    end
+    L = make_L(M)
+    losses = Float64[]
+    for _ in 1:iters
+        Y = (κ*L + make_D(P,M)) \ (P' * X)
+        P = softmax(P, X, Y, β, N)
+        push!(losses, lossfn(X, P, P_old, Y, β, κ))
+        P_old = P
+    end
+    return losses
 end
 
 function plot_sol(X, Y)
@@ -127,17 +151,27 @@ function is_tour(X, t)
     return true
 end
 
+function post_process!(X, t)
+    # Post-process to ensure a complete tour
+    for x in collect(eachrow(X))
+        if x ∉ t
+            # Find nearest neighbor of x in tour
+            nn = findmin(y->norm(y-x), t)[2]
+            insert!(t, nn+1, x)
+        end
+    end
+end
+
 function get_tour(X, P)
     tour = Vector{Float64}[]
     for i in 1:size(P)[2]
         _, city = findmax(P[:,i])
         if X[city,:] ∉ tour
-            #println("Day $i city: $city")
             push!(tour, X[city,:])
         end
     end
     push!(tour, tour[1])
-    #@assert is_tour(X, tour)
+    #post_process!(X, tour)
     return tour
 end
 
